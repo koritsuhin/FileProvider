@@ -815,7 +815,8 @@ extension FTPFileProvider {
                 return
             }
             
-            self.execute(command: command, on: task, completionHandler: { (response, error) in
+            func handler(_ response: String?, _ error: Error?) {
+                
                 if let error = error {
                     completionHandler?(error)
                     self.delegateNotify(operation, error: error)
@@ -862,7 +863,18 @@ extension FTPFileProvider {
                 progress.completedUnitCount = progress.totalUnitCount
                 completionHandler?(nil)
                 self.delegateNotify(operation)
-            })
+            }
+            
+            if operation.description == "Move" {
+                self.execute(command: "RNFR \(self.ftpPath(sourcePath))", on: task, completionHandler: { (response, error) in
+                    self.execute(command: "RNTO \(self.ftpPath(destPath!))", on: task, completionHandler: handler)
+                })
+                
+            }else {
+                
+                self.execute(command: command, on: task, completionHandler: handler)
+            }
+            
         }
         
         progress.cancellationHandler = { [weak task] in

@@ -494,93 +494,97 @@ internal extension FTPFileProvider {
                     completionHandler?(URLError(.badServerResponse, url: self.url(of: filePath)))
                     return
                 }
-                
-                // Send retreive command
-                self.execute(command: "TYPE I" + "\r\n" + "REST \(position)" + "\r\n" + "RETR \(filePath)", on: task) { (response, error) in
-                    // starting passive task
-                    onTask?(dataTask)
-                    
-                    defer {
-                        dataTask.closeRead()
-                        dataTask.closeWrite()
-                    }
-                    
-                    if stream.streamStatus == .notOpen || stream.streamStatus == .closed {
-                        stream.open()
-                    }
-                    
-                    let timeout = self.session.configuration.timeoutIntervalForRequest
-                    var totalReceived: Int64 = 0
-                    var eof = false
-                    let error_lock = NSLock()
-                    var error: Error?
-                    while !eof {
-                        let group = DispatchGroup()
-                        group.enter()
-                        dataTask.readData(ofMinLength: 1, maxLength: Int.max, timeout: timeout) { (data, segeof, segerror) in
+                self.execute(command: "TYPE I", on: task) { response, error in
+                    self.execute(command: "REST \(position)", on: task) { response, error in
+                        // Send retreive command
+                        self.execute(command:  "RETR \(filePath)", on: task) { (response, error) in
+                            // starting passive task
+                            onTask?(dataTask)
+                            
                             defer {
-                                group.leave()
+                                dataTask.closeRead()
+                                dataTask.closeWrite()
                             }
-                            if let segerror = segerror {
-                                error_lock.lock()
-                                error = segerror
-                                error_lock.unlock()
-                                return
+                            
+                            if stream.streamStatus == .notOpen || stream.streamStatus == .closed {
+                                stream.open()
                             }
-                            if let data = data {
-                                var data = data
-                                if length > 0, Int64(data.count) + totalReceived > Int64(length) {
-                                    data.count = Int(Int64(length) - totalReceived)
+                            
+                            let timeout = self.session.configuration.timeoutIntervalForRequest
+                            var totalReceived: Int64 = 0
+                            var eof = false
+                            let error_lock = NSLock()
+                            var error: Error?
+                            while !eof {
+                                let group = DispatchGroup()
+                                group.enter()
+                                dataTask.readData(ofMinLength: 1, maxLength: Int.max, timeout: timeout) { (data, segeof, segerror) in
+                                    defer {
+                                        group.leave()
+                                    }
+                                    if let segerror = segerror {
+                                        error_lock.lock()
+                                        error = segerror
+                                        error_lock.unlock()
+                                        return
+                                    }
+                                    if let data = data {
+                                        var data = data
+                                        if length > 0, Int64(data.count) + totalReceived > Int64(length) {
+                                            data.count = Int(Int64(length) - totalReceived)
+                                        }
+                                        totalReceived += Int64(data.count)
+                                        let result = (try? stream.write(data: data)) ?? -1
+                                        if result < 0 {
+                                            error_lock.lock()
+                                            error = stream.streamError ?? URLError(.cannotWriteToFile, url: self.url(of: filePath))
+                                            error_lock.unlock()
+                                            eof = true
+                                            return
+                                        }
+                                        onProgress(data, totalReceived, totalSize)
+                                    }
+                                    eof = segeof || (length > 0 && totalReceived >= Int64(length))
                                 }
-                                totalReceived += Int64(data.count)
-                                let result = (try? stream.write(data: data)) ?? -1
-                                if result < 0 {
-                                    error_lock.lock()
-                                    error = stream.streamError ?? URLError(.cannotWriteToFile, url: self.url(of: filePath))
+                                let waitResult = group.wait(timeout: .now() + timeout)
+                                
+                                error_lock.try()
+                                if let error = error {
                                     error_lock.unlock()
-                                    eof = true
+                                    completionHandler?(error)
                                     return
                                 }
-                                onProgress(data, totalReceived, totalSize)
+                                error_lock.unlock()
+                                
+                                if waitResult == .timedOut {
+                                    completionHandler?(URLError(.timedOut, url: self.url(of: filePath)))
+                                    return
+                                }
                             }
-                            eof = segeof || (length > 0 && totalReceived >= Int64(length))
-                        }
-                        let waitResult = group.wait(timeout: .now() + timeout)
-                        
-                        error_lock.try()
-                        if let error = error {
-                            error_lock.unlock()
-                            completionHandler?(error)
-                            return
-                        }
-                        error_lock.unlock()
-                        
-                        if waitResult == .timedOut {
-                            completionHandler?(URLError(.timedOut, url: self.url(of: filePath)))
-                            return
-                        }
-                    }
-                    
-                    completionHandler?(nil)
-                    
-                    do {
-                        if let error = error {
-                            throw error
-                        }
-                        
-                        guard let response = response else {
-                            throw URLError(.cannotParseResponse, url: self.url(of: filePath))
-                        }
-                        
-                        if !(response.hasPrefix("1") || response.hasPrefix("2")) {
-                            throw FileProviderFTPError(message: response)
-                        }
-                    } catch {
-                        self.dispatch_queue.async {
-                            completionHandler?(error)
+                            
+                            completionHandler?(nil)
+                            
+                            do {
+                                if let error = error {
+                                    throw error
+                                }
+                                
+                                guard let response = response else {
+                                    throw URLError(.cannotParseResponse, url: self.url(of: filePath))
+                                }
+                                
+                                if !(response.hasPrefix("1") || response.hasPrefix("2")) {
+                                    throw FileProviderFTPError(message: response)
+                                }
+                            } catch {
+                                self.dispatch_queue.async {
+                                    completionHandler?(error)
+                                }
+                            }
                         }
                     }
                 }
+                
             }
         }
     }
